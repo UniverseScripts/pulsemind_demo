@@ -7,12 +7,21 @@ and clinician-in-the-loop. It never controls a ventilator and never recommends t
 This repository is the **live demo** — the only place the trained model reaches a screen.
 
 ```
-front-end/   Vite :5173    React dashboard. Reads /api, never derives a band from a score.
 back-end/    Node :3500    Express + Mongoose -> MongoDB Atlas. The history of record.
              FastAPI :8000 pythonService/. The only process that touches the model.
+front-end/   Vite :5174    React. The ENGINEERING view: simulation bar, ward stream, telemetry.
 contract/                  The shared data contract, as TypeScript types.
 checks/                    Executable end-to-end verification.
 ```
+
+**There are two front-ends now, and only one of them is the clinical demo.** Since 2026-08-29
+the screen a clinician or a judge looks at is the finalized SvelteKit UI in the sibling
+repository `frontend-and-backend-FINAL/`, on **:5173**. This repository's React app moved to
+**:5174** and is kept as the engineering view. Both read the same `/api` on :3500, so the
+backend is the single source of truth for both and neither can drift from the model.
+
+Setting up the clinical UI is [its own section](#4-the-clinical-ui--sveltekit-5173) below. If you
+only want to see the pipeline work, the React app alone is still enough.
 
 The model itself lives in a separate repository and is imported as a package; this one owns
 the serving path and the screen.
@@ -77,14 +86,20 @@ are derived from MIMIC-IV under a PhysioNet DUA. Without them the service will n
 The 7B weights under `models/llm` are a further 15 GB and are needed only for generated
 explanations, not for scoring.
 
-### 4. JavaScript dependencies — two different package managers
+### 4. JavaScript dependencies — three installs, two package managers
 
 ```powershell
-cd back-end  ; npm install       # package-lock.json
-cd front-end ; pnpm install      # pnpm-lock.yaml
+# each line from THIS directory, so they can be pasted one at a time
+npm  install --prefix back-end                                  # package-lock.json
+pnpm install --dir    front-end                                 # pnpm-lock.yaml
+pnpm install --dir    ..\frontend-and-backend-FINAL\front-end   # its own pnpm-lock.yaml
 ```
 
-Do not cross them.
+Do not cross them. `back-end/` is the only npm project here; running `pnpm` in it, or `npm` in
+either front-end, writes a competing lockfile.
+
+The third is the clinical UI and lives in a different repository. Skip it if you only want the
+engineering view.
 
 ### 5. `back-end/.env`
 
@@ -149,23 +164,98 @@ to a single session.
 
 Ready when it prints `Connected to MongoDB` then `Server running on port 3500`.
 
-### 3. Dashboard — Vite :5173
+### 3. Engineering view — Vite :5174
 
 ```powershell
 pnpm dev                # from front-end/
 ```
 
-⚠️ Open **`http://localhost:5173`**, not `127.0.0.1:5173`. Vite binds IPv6 `[::1]` only and
+⚠️ **:5174, not :5173.** The clinical UI took 5173 on 2026-08-29 and this app moved. The port
+is set in `front-end/vite.config.ts`; `back-end/config/allowedOrigins.js` already lists both.
+
+⚠️ Open **`http://localhost:5174`**, not `127.0.0.1:5174`. Vite binds IPv6 `[::1]` only and
 the IPv4 address is refused.
 
 `pnpm` is the package manager — `pnpm-lock.yaml` is the lockfile. Do not run `npm install`
 here; it writes a competing `package-lock.json`.
 
+This is where the simulation bar, the ward stream driver and the original telemetry dock live.
+Everything here still works; it is simply no longer the screen the demo is given on.
+
+### 4. The clinical UI — SvelteKit :5173
+
+⚠️ **A DIFFERENT REPOSITORY.** It is not under this one and it has its own lockfile, its own
+package manager and its own tests:
+
+```
+<workspace>/
+  pulsemind_demo/              this repository
+  frontend-and-backend-FINAL/  the finalized UI
+    front-end/                 the SvelteKit app  <- pnpm runs HERE
+    back-end/                  a scaffold this demo does not use. Ignore it.
+```
+
+```powershell
+cd ..\frontend-and-backend-FINAL\front-end
+pnpm install
+pnpm dev
+```
+
+Node 22 and pnpm 10. `pnpm install` also runs `svelte-kit sync`, which generates the types
+`pnpm check` needs; a fresh clone that skips it fails type-checking for a reason unrelated to
+its code.
+
+**`front-end/.env` is what points the app at this backend, and it is NOT in the repository.**
+Copy the example and edit if you need to:
+
+```powershell
+cp .env.example .env    # from frontend-and-backend-FINAL/front-end
+```
+
+The defaults in `.env.example` are already correct for this demo, so a straight copy is enough.
+The four keys:
+
+```ini
+PUBLIC_PULSEMIND_DATA_SOURCE=pulsemind   # selects the live pipeline over the fixtures
+PUBLIC_PULSEMIND_API_BASE=/api           # same origin, through the Vite proxy
+PUBLIC_PULSEMIND_DEMO_CONTROLS=true      # the operator strip; off by default
+PUBLIC_PULSEMIND_REQUIRE_AUTH=false      # this backend has no /auth surface
+```
+
+⚠️ **No `.env` is committed, here or in the model repository, whatever is in it.** These four
+are `PUBLIC_*` variables, so they are compiled into the client bundle and are already readable
+by anyone who loads the page: their VALUES are harmless. That is not a reason to track the
+file. A committed `.env` is where somebody later adds a real credential, and GitHub's push
+protection flags the filename without reading the contents. `.gitignore` covers `.env` and
+`*.env` and makes a single exception for `*.env.example`.
+
+⚠️ **`pulsemind` is matched as an exact string, never as a truthiness test.** Mis-spell it and
+the app silently falls back to its own 30-patient fixture set, which renders perfectly and is
+not this ward. The board says which source it is on; read it rather than assuming.
+
+⚠️ **`PUBLIC_PULSEMIND_API_BASE=/api` is not a convenience.** Same-origin is what makes
+`Server-Timing` readable to the pipeline panel at all, and what keeps a session cookie
+first-party if authentication is ever switched on.
+
+⚠️ **The Vite proxy does NOT rewrite the path.** It forwards `/api` verbatim, because this
+service mounts everything under `/api`. The upstream design shipped a
+`path.replace(/^\/api/, '')` for a root-mounted backend; leaving it in place 404s every
+request in the app.
+
+Everything else the app needs comes from this repository unchanged. It talks to the same Node
+API, so the model service, Atlas and the seed are shared.
+
 ### Seed the ward
 
-The board is empty until the ward exists: the **Restart** button in the prototype feed bar,
-or `POST http://127.0.0.1:3500/api/ward/seed`. Destructive by design — seeding twice gives
-the same ward, not two — so skip it if the previous session's ward is still in Atlas.
+The board is empty until the ward exists. Any of three ways, and they do the same thing:
+**Restart ward** in the SvelteKit demo strip, **Restart** in the React feed bar, or
+`POST http://127.0.0.1:3500/api/ward/seed`. Destructive by design — seeding twice gives the
+same ward, not two — so skip it if the previous session's ward is still in Atlas.
+
+⚠️ **Seed 24 ticks for the clinical UI.** Its risk-history chart windows to 24 hours, and a
+tick is one hour of ward time, so a shorter backfill leaves the chart nearly empty. The demo
+strip's Restart already asks for 24; a hand-rolled `POST` should send
+`{"backfill_ticks": 24}`.
 
 ### Warm the explainer before demonstrating
 
@@ -186,10 +276,15 @@ encoder (x264) while demonstrating.
 
 ### Showing the pipeline
 
-**Pipeline** in the feed bar opens a dock listing every API call the dashboard makes, with
-the time each stage of the pipeline actually took — feature assembly, scoring, the band
-decision, generation, the Mongo write. Closed, it costs the board no height at all, which
-is why the control lives in the existing bar rather than in a second one.
+Both front-ends have one, reading the same headers off the same requests.
+
+- **Clinical UI (:5173)** — `Show pipeline` in the demonstration strip along the bottom.
+- **Engineering view (:5174)** — `Pipeline` in the feed bar.
+
+Either opens a dock listing every API call that app makes, with the time each stage of the
+pipeline actually took — feature assembly, scoring, the band decision, generation, the Mongo
+write. Closed, it costs the board no height at all, which is why the control lives in an
+existing bar rather than in a second one.
 
 Every figure is measured by the tier that did the work and returned on a W3C
 `Server-Timing` header. **A stage that did not run shows as absent, never as `0 ms`** — the
@@ -210,25 +305,25 @@ than the rest. Read it off the panel rather than quoting one of these.
 anything — `model_runtime` contained no clock at all. The `assess` span is the first real
 measurement. It came out close, which is luck rather than evidence; quote the span.
 
-### Confirming all three are up
+### Confirming the services are up
 
 ```powershell
 curl.exe http://127.0.0.1:8000/healthz     # {"status":"pass", ...}
 curl.exe http://127.0.0.1:3500/api/ward    # array of 8 beds
-Get-NetTCPConnection -LocalPort 8000,3500,5173 -State Listen | Select-Object LocalPort, OwningProcess
+Get-NetTCPConnection -LocalPort 8000,3500,5173,5174 -State Listen | Select-Object LocalPort, OwningProcess
 ```
 
 ### Stopping
 
 ```powershell
-Get-NetTCPConnection -LocalPort 8000,3500,5173 -State Listen |
+Get-NetTCPConnection -LocalPort 8000,3500,5173,5174 -State Listen |
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
 ```
 
 Nothing is lost: the services are stateless and MongoDB Atlas holds the ward.
 
 **Local only.** The model service needs a GPU and a 7B language model, so there is no
-deployed backend. A static deploy of the frontend renders the shell and then shows its
+deployed backend. A static deploy of either front-end renders the shell and then shows its
 error state on every fetch; that is intended.
 
 ## Two things worth knowing before reading the code
@@ -258,3 +353,12 @@ added to it.** `.gitignore` blocks CSVs outright for that reason.
 
 No authentication, no RBAC, no audit log, and no HL7 feed — all named blockers before any
 shadow or pilot deployment, all deliberately visible rather than stubbed.
+
+⚠️ **The clinical UI has sign-in SCREENS, and they guard nothing here.** It ships a complete
+password, TOTP and passkey surface, but this backend serves no `/auth`, so the gate is off
+(`PUBLIC_PULSEMIND_REQUIRE_AUTH=false`) and `/login` renders its own "demonstration build"
+notice. Screens are not the blocker; the missing surface is. Do not read them as authentication.
+
+**A clinician's review IS recorded now**, against the reading's prompt, with the disposition and
+the time. It records no clinician, because nothing signs the action, and both the panel and the
+review history say so in words. Attribution is still a blocker.

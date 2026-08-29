@@ -250,9 +250,30 @@ const getWard = async (req, res) => {
     { $project: { record: 0 } },
     { $sort: { bed_code: 1 } }
   ]);
+  // Demographics ride along, so a board that needs them costs one request and
+  // two queries instead of one request per bed. They are the SAME rows
+  // `/api/patient/:id/context` serves -- one read for the whole ward, not a
+  // per-bed lookup -- and the field is additive: a client that does not know
+  // about it is unaffected.
+  //
+  // THREE FIELDS, NOT THE WHOLE CONTEXT. The board renders identity and risk; it
+  // does not render weight, height, comorbidities or the Charlson index, and
+  // shipping a recorded medical history to a screen that shows none of it is a
+  // minimum-necessary problem rather than a payload-size one. These three are the
+  // ones the client's own validator requires. The drawer still reads the whole
+  // context from `/api/patient/:id/context`, which is where it belongs.
+  //
+  // Scoped to the beds on this board, not the whole collection: an unfiltered
+  // find grows without bound as stays accumulate.
+  const states = await StayState.find({ patient_id: { $in: latest.map((r) => r.patient_id) } })
+    .select('patient_id context.age context.sex context.ethnicity')
+    .lean();
+  const contexts = new Map(states.map((s) => [s.patient_id, s.context ?? null]));
+
   // An empty ward is an empty list, not a 204: Express strips a 204's body, so
   // `.json()` threw and the empty-state screen was unreachable.
-  res.json(await Promise.all(latest.map(withPrompt)));
+  const rows = await Promise.all(latest.map(withPrompt));
+  res.json(rows.map((row) => ({ ...row, context: contexts.get(row.patient_id) ?? null })));
 };
 
 /** One patient's current assessment. */
