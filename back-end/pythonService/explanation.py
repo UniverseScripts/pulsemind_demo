@@ -71,27 +71,44 @@ def check(record: dict, text: str, pol: E.Policy) -> list[G.Finding]:
 
 #: Free VRAM the 7B needs, from the driver, before the load is allowed to start.
 #:
-#: ⚠️ A FLOOR UNDER A KNOWN FAILURE, NOT A GUARANTEE OF SUCCESS.
+#: MEASURED, 2026-09-07. This was a bracket for three weeks -- a segfault at
+#: 6561 MiB free and a success at 6721, with 6700 chosen inside the band and the
+#: comment admitting it was "slightly optimistic". Nobody had watched the card
+#: DURING a load, so the peak was inferred from whether the process survived.
 #:
-#: Two measurements bracket the real requirement, and nothing narrows it further:
+#: `bki/pipeline/tools/vram_probe.py` samples the driver at 5 Hz across the load
+#: -- same source, same unit as the check below. Three consecutive loads:
 #:
-#:   6561 MiB free (6.88 GB)  SEGFAULTED, 2026-08-18 -- and loaded, a day later.
-#:                            `demo.md` calls that "the edge, not headroom".
-#:   6721 MiB free            LOADED in 27.9 s, 2026-08-19, leaving 642 MiB.
-#:                            The model itself is holding ~6079 MiB.
+#:   run   free before   PEAK    resident   load    generate
+#:     1          6795   6059        5929   16.7s      14.4s
+#:     2          7501   6239        6109   17.4s      13.2s
+#:     3          7423   6171        6041   15.8s      13.3s
 #:
-#: So the peak this load needs is somewhere in (6561, 6721]. 6700 is inside that
-#: band by 21 MiB and is therefore slightly optimistic -- chosen anyway, because
-#: the alternative refuses on the machine the demo runs on, and a refusal that
-#: should have been a load costs a template explanation while a segfault costs
-#: the service. Raise it only on a load that FAILS above this line; that failure
-#: is the only evidence that would narrow the band from below.
+#: Peak max 6239, spread 180. The transient above resident is 130 MiB in ALL
+#: THREE runs, which is the steadiest figure in this whole investigation.
 #:
-#: ⚠️ Deliberately NOT `s19_generate`'s `vram_free_gb > 5.5`. That gate was
-#: written when the figure came from `torch.cuda.mem_get_info()` and was
-#: optimistic by gigabytes; now the figure is honest, 5.5 GB sits well below a
-#: level that has already crashed.
-MIN_FREE_VRAM_MIB = 6700
+#: 6420 = 6239 + 180. Peak plus the observed run-to-run spread, which is the
+#: margin that matters: free VRAM at check time is not free VRAM 17 s later, and
+#: drift is what made 6561 crash one day and load the next.
+#:
+#: ⚠️ THIS IS THE "LOWEST THAT LOADS" SETTING, chosen deliberately (2026-09-07)
+#: over a safer one. It is BELOW the 6561 that crashed, so it will permit a
+#: configuration that has failed before. That is the accepted trade: the failure
+#: mode is a segfault that takes the service down, and the mitigation is that a
+#: demo should warm the explainer FIRST, when a crash costs a restart rather than
+#: an audience. Raise it on any load that fails above this line -- that failure
+#: is still the only evidence that narrows the requirement from below.
+#:
+#: ⚠️ The peak does NOT move with `PM_LLM_EMBED_DEVICE`, so do not lower this
+#: constant when that setting changes: the table is on the card while
+#: `from_pretrained` runs, whatever happens to it afterwards. What it does change
+#: is the room left AFTER the load, and therefore generation speed -- 13.6 s
+#: against 21.7 s, measured. See `LLM_EMBED_DEVICE` in `pipeline/config.py`.
+#:
+#: The VALUE is defined in `pipeline.config`, so this service and the pipeline
+#: stage cannot drift apart -- they did, by 1175 MiB, for three weeks. The
+#: evidence stays here, where the gate that acts on it lives.
+MIN_FREE_VRAM_MIB = C.LLM_MIN_FREE_VRAM_MIB
 
 
 class InsufficientVRAM(RuntimeError):
